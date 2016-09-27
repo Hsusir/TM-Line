@@ -1,0 +1,186 @@
+---
+title: "Line的口碑探勘 "
+author: "許sir"
+
+---
+### **資料說明**
+#### 1.採用Google Play的Line評論
+#### 2.抓取時間是2016/02/20
+
+```{}
+一般抓取網頁資料大致採用Get跟post兩種
+Get可以想像成是一種明信片的方式，所有資料在網頁上都清楚寫明，容易下載
+Post是信件，你只能看見信封上的資訊，信的內容你看不到
+本次範例是屬於Post的型式
+```
+
+### **[資料整備與套件載入]**
+```{}
+install.packages("XML")
+install.packages("bitops")
+install.packages("RCurl")
+```
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+library(XML)
+library(RCurl)
+
+setwd("D:/Rdata Practice/tmR-III")
+
+url <- "https://play.google.com/store/apps/details?id=jp.naver.line.android&hl=zh_TW" #網址
+
+# https的website會有SSL的認證問題，加上參數ssl.verifypeer=False即可
+# windows常有中文亂碼問題，不過有時在資料解析過後就會正常
+data <- getURL(url, ssl.verifypeer = FALSE)
+data <- htmlParse(data, encoding = "UTF-8")
+
+# apply系列函數可參考 http://rightthewaygeek.blogspot.tw/2013/08/r-1-apply_28.html
+data <- xpathSApply(data,"//div[@class='review-body']",xmlValue)
+data <- gsub("完整評論","",data)
+data <- gsub(" ","",data) #去除掉空格
+```
+
+```{}
+到目前為止只有爬到第一頁的40筆評論
+```
+
+
+### **[Part 1].爬虫設定**
+```{r message=FALSE, warning=FALSE}
+library(RJSONIO)
+
+result <- c() #先設定result是一個空的向量，用來存等一下爬虫的結果
+```
+
+#### **1-1.爬虫迴圈設定**
+```{}
+我們先爬個20頁
+網址是從開發者工具得到的網址以及有些參數要設定
+reviewType:0
+pageNum:2
+id:jp.naver.line.android
+reviewSortOrder:4
+xhr:1
+token:PtrcY5Gz5lmlFqX7dC6IjtD8h58:1455967033016
+hl:zh_TW
+```
+
+```{r message=FALSE, warning=FALSE}
+for(i in 1:20){
+  print(i)
+  data <- postForm("https://play.google.com/store/getreviews?authuser=0",
+                   reviewType = "0", 
+                   pageNum = i,
+                   id = "jp.naver.line.android",
+                   reviewSortOrder = "4",
+                   xhr = "1",
+                   token = "PtrcY5Gz5lmlFqX7dC6IjtD8h58:1455967033016",
+                   hl = "zh_TW"
+                   ,.opts = list(ssl.verifypeer = FALSE),.encoding="UTF-8")
+  
+  
+  data <- fromJSON(substr(data,7,nchar(data)), encoding="UTF-8") #前六格是沒意義的字元，所以從第七格開始
+  data <- htmlParse(data[[1]][[3]],encoding="utf8")
+  data <- xpathSApply(data,"//div[@class='review-body']")
+  data <- lapply(data,function(u)xmlValue(u,trim=T))
+  data <- gsub("完整評論","",data)
+  result <- c(result, data)
+}
+```
+
+
+```{r message=FALSE, warning=FALSE}
+#你可以查看一下result的結果
+#應該有800筆
+class(result)
+summary(result)
+```
+
+
+### **[Part 2].中文探勘**
+```{}
+install.packages("jiebaR")
+install.packages("Rwordseg", repos="http://R-Forge.R-project.org")
+install.packages("tm")
+install.packages("wordcloud")
+```
+
+
+
+#### **2-1.採用jiebaR進行斷詞，以"默認"的斷詞引擎進行斷詞**
+```{r message=FALSE, warning=FALSE}
+library(jiebaR)
+
+mixseg = worker() #透過結巴R的套件，以"默認"的斷詞引擎進行斷詞
+resultSegmentCorpus <- sapply(result, segment, mixseg)
+resultSegmentWords <- do.call(c,resultSegmentCorpus)
+sort(table(resultSegmentWords)) #排序
+```
+
+#### **2-2.採用jiebaR進行斷詞，以標注詞性的斷詞引擎進行斷詞**
+```{r message=FALSE, warning=FALSE}
+tagseg = worker('tag')
+resultSegmentCorpus1 <- segment(result, tagseg)
+resultSegmentCorpus1
+```
+
+#### **2-3.只取名詞與動詞進行分析**
+```{r message=FALSE, warning=FALSE}
+#到這邊我們可以發現，有很多的贅字贅詞，因此只看名詞與動詞
+#一方面可減少贅字贅詞，另一方面可以讓主題更明確
+#這小節未完成
+library(Rwordseg)
+library(tm)
+#library(tmcn)
+#d.corpus <- tm_map(resultSegmentCorpus1, segmentCN, nature = TRUE)
+```
+
+
+#### **2-4.稀疏矩陣（Sparse matrix）**
+```{r message=FALSE, warning=FALSE}
+dtm_corpus <- matrix(0,nrow=length(resultSegmentCorpus),
+                     ncol=length(resultSegmentWords),
+                     dimnames=list(NULL,resultSegmentWords))
+for(i in 1:length(resultSegmentCorpus)){
+  count_tmp <- table(match(resultSegmentCorpus[[i]],resultSegmentWords))
+  dtm_corpus[i,as.numeric(names(count_tmp))] <- count_tmp
+}
+
+```
+
+
+### **[Part 3].文字雲**
+```{}
+install.packages("RColorBrewer")
+install.packages("wordcloud")
+devtools::install_github("jbkunst/d3wordcloud")
+```
+
+#### **3-1.Text Cluster**
++ 階層式(Hierarchical)分群應用於文字資料
++ 將*文字*分群
+```{}
+#未完成
+library(stats)
+
+tdm_corpus <- t(dtm_corpus)
+tdm_corpus <- tdm_corpus[nchar(rownames(tdm_corpus))!=1,]
+tdm_corpus <- as.TermDocumentMatrix(tdm_corpus, weight = weightTf)
+tdm_corpus <- removeSparseTerms(tdm_corpus, sparse=0.7)
+
+dist_tdm_corpus <- dist(as.matrix(tdm_corpus))
+dist_tdm_corpus
+fit <- hclust(dist_tdm_corpus, method="single")
+plot(fit,main = "Cluster Dendrogram")
+```
+
+#### **3-2.文字雲**
+```{r message=FALSE, warning=FALSE}
+library(RColorBrewer)
+library(wordcloud)
+
+freqs <- colSums(dtm_corpus)
+words <- names(freqs)
+wordcloud(words,freqs, min.freq = 30,colors=brewer.pal(6, "Dark2")) #次數在30以上的才畫出來
+```
+
